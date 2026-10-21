@@ -12,8 +12,13 @@ permissions:
 
 jobs:
   build:
+    name: Build Release APK
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
+
+    env:
+      ANDROID_HOME: ${{ github.workspace }}/.android-sdk
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/.android-sdk
 
     steps:
       - name: Checkout source
@@ -25,34 +30,111 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: >-
-            platform-tools
-            platforms;android-37
-            build-tools;36.0.0
-            ndk;28.2.13676358
+      - name: Install Android command-line tools
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      - name: Setup Gradle
+          mkdir -p "$ANDROID_HOME/cmdline-tools/latest"
+
+          curl -fL --retry 3 \
+            https://dl.google.com/android/repository/commandlinetools-linux-12266719_latest.zip \
+            -o /tmp/android-tools.zip
+
+          unzip -q /tmp/android-tools.zip -d /tmp/android-tools
+
+          cp -a /tmp/android-tools/cmdline-tools/. \
+            "$ANDROID_HOME/cmdline-tools/latest/"
+
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            --version
+
+      - name: Accept SDK licenses
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          set +o pipefail
+          yes | sdkmanager \
+            --sdk_root="$ANDROID_HOME" \
+            --licenses > /tmp/android-licenses.log 2>&1
+          set -o pipefail
+
+          tail -n 5 /tmp/android-licenses.log
+
+      - name: Check Android API 37 availability
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sdkmanager \
+            --sdk_root="$ANDROID_HOME" \
+            --list --channel=3 \
+            > /tmp/sdk-list.txt 2>&1
+
+          echo "=== Android 37 packages ==="
+          grep -E 'platforms;android-37([[:space:]]|$)' \
+            /tmp/sdk-list.txt || true
+
+          if ! grep -Eq \
+            '^[[:space:]]*platforms;android-37[[:space:]]' \
+            /tmp/sdk-list.txt; then
+            echo "::error::Android API 37 is not available in the SDK repository."
+            echo "The project requires compileSdk 37."
+            echo "Do not silently downgrade compileSdk."
+            exit 1
+          fi
+
+      - name: Install SDK and NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sdkmanager \
+            --sdk_root="$ANDROID_HOME" \
+            --channel=3 \
+            --install \
+            "platform-tools" \
+            "platforms;android-37" \
+            "ndk;28.2.13676358"
+
+          sdkmanager \
+            --sdk_root="$ANDROID_HOME" \
+            --list_installed
+
+      - name: Setup Gradle cache
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build APK
+      - name: Build Release APK
+        shell: bash
         run: |
-          chmod +x gradlew
+          set -euo pipefail
+
+          chmod +x ./gradlew
+
           ./gradlew :app:assembleRelease \
             --no-daemon \
             --stacktrace
 
-      - name: List APK files
+      - name: Verify APK
+        shell: bash
         run: |
-          find app/build/outputs/apk \
-            -type f -name "*.apk"
+          set -euo pipefail
+
+          APK="app/build/outputs/apk/release/app-release.apk"
+
+          test -f "$APK"
+
+          echo "=== APK ==="
+          ls -lh "$APK"
+          sha256sum "$APK"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: OP13HyperOSFix-Release
-          path: app/build/outputs/apk/release/*.apk
-          if-no-files-found: error
+          path: app/build/outputs/apk/release/app-release.apk
           retention-days: 30
+          if-no-files-found: error
