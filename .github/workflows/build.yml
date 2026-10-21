@@ -30,37 +30,68 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Check Android SDK
+      - name: Locate or install Android SDK tools
         shell: bash
         run: |
-          echo "JAVA_HOME=$JAVA_HOME"
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          java -version
-          sdkmanager --version
+          set -euo pipefail
 
-      - name: Accept Android SDK licenses
-        shell: bash
-        run: |
-          yes | sdkmanager --licenses || true
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          mkdir -p "$ANDROID_HOME/cmdline-tools"
+
+          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" \
+            -type f -name sdkmanager \
+            -path "*/bin/sdkmanager" \
+            -print -quit 2>/dev/null || true)
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "Installing Android command-line tools..."
+
+            curl -fL --retry 3 \
+              "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" \
+              -o /tmp/cmdline-tools.zip
+
+            mkdir -p /tmp/android-cmdline
+            unzip -q /tmp/cmdline-tools.zip \
+              -d /tmp/android-cmdline
+
+            mkdir -p "$ANDROID_HOME/cmdline-tools/latest"
+
+            cp -a /tmp/android-cmdline/cmdline-tools/. \
+              "$ANDROID_HOME/cmdline-tools/latest/"
+
+            SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          fi
+
+          chmod +x "$SDKMANAGER"
+
+          SDKMANAGER_DIR=$(dirname "$SDKMANAGER")
+          echo "$SDKMANAGER_DIR" >> "$GITHUB_PATH"
+
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
+
+          "$SDKMANAGER" --version
 
       - name: Install Android SDK and NDK
         shell: bash
         run: |
-          sdkmanager --install \
+          set -euo pipefail
+
+          yes | "$SDKMANAGER" --licenses \
+            >/dev/null || test "${PIPESTATUS[1]}" -eq 0
+
+          "$SDKMANAGER" --install \
             "platforms;android-37" \
+            "build-tools;36.0.0" \
             "ndk;28.2.13676358"
 
-          sdkmanager --list_installed
+          "$SDKMANAGER" --list_installed
 
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v4
-        with:
-          cache-read-only: false
 
       - name: Make Gradle executable
         shell: bash
-        run: |
-          chmod +x ./gradlew
+        run: chmod +x ./gradlew
 
       - name: Build Release APK
         shell: bash
@@ -69,22 +100,33 @@ jobs:
             --no-daemon \
             --stacktrace
 
-      - name: Prepare APK artifact
-        if: success()
+      - name: Find and prepare APK
         shell: bash
         run: |
+          set -euo pipefail
+
           mkdir -p output
 
-          cp \
-            app/build/outputs/apk/release/app-release.apk \
+          echo "=== Generated APKs ==="
+          find app/build/outputs/apk \
+            -type f -name "*.apk" -print
+
+          APK=$(find app/build/outputs/apk/release \
+            -type f -name "*.apk" \
+            -print -quit)
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: Release APK not found"
+            exit 1
+          fi
+
+          cp "$APK" \
             output/OP13HyperOSFix-release.apk
 
-          echo "=== APK information ==="
           ls -lh output/
           sha256sum output/*.apk
 
-      - name: Upload Release APK
-        if: success()
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: OP13HyperOSFix-Release
