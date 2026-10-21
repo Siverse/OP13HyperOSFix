@@ -12,7 +12,6 @@ permissions:
 
 jobs:
   build:
-    name: Build Release APK
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
@@ -21,7 +20,7 @@ jobs:
       ANDROID_SDK_ROOT: ${{ github.workspace }}/.android-sdk
 
     steps:
-      - name: Checkout source
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup JDK 17
@@ -48,46 +47,20 @@ jobs:
 
           echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
 
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
-            --version
-
       - name: Accept SDK licenses
         shell: bash
         run: |
-          set -euo pipefail
-
           set +o pipefail
           yes | sdkmanager \
             --sdk_root="$ANDROID_HOME" \
-            --licenses > /tmp/android-licenses.log 2>&1
+            --licenses > /tmp/licenses.log 2>&1
+          result=${PIPESTATUS[1]}
           set -o pipefail
 
-          tail -n 5 /tmp/android-licenses.log
+          tail -n 5 /tmp/licenses.log
+          exit "$result"
 
-      - name: Check Android API 37 availability
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          sdkmanager \
-            --sdk_root="$ANDROID_HOME" \
-            --list --channel=3 \
-            > /tmp/sdk-list.txt 2>&1
-
-          echo "=== Android 37 packages ==="
-          grep -E 'platforms;android-37([[:space:]]|$)' \
-            /tmp/sdk-list.txt || true
-
-          if ! grep -Eq \
-            '^[[:space:]]*platforms;android-37[[:space:]]' \
-            /tmp/sdk-list.txt; then
-            echo "::error::Android API 37 is not available in the SDK repository."
-            echo "The project requires compileSdk 37."
-            echo "Do not silently downgrade compileSdk."
-            exit 1
-          fi
-
-      - name: Install SDK and NDK
+      - name: Install Android 17 SDK and NDK
         shell: bash
         run: |
           set -euo pipefail
@@ -97,14 +70,22 @@ jobs:
             --channel=3 \
             --install \
             "platform-tools" \
-            "platforms;android-37" \
+            "platforms;android-37.0" \
+            "build-tools;37.0.0" \
             "ndk;28.2.13676358"
 
+          echo "=== Installed packages ==="
           sdkmanager \
             --sdk_root="$ANDROID_HOME" \
             --list_installed
 
-      - name: Setup Gradle cache
+          echo "=== Android platform information ==="
+          find "$ANDROID_HOME/platforms" \
+            -maxdepth 2 \
+            -name source.properties \
+            -exec sh -c 'echo "$1"; cat "$1"' _ {} \;
+
+      - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build Release APK
@@ -126,8 +107,6 @@ jobs:
           APK="app/build/outputs/apk/release/app-release.apk"
 
           test -f "$APK"
-
-          echo "=== APK ==="
           ls -lh "$APK"
           sha256sum "$APK"
 
